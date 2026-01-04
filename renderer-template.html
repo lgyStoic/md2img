@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Markdown Renderer</title>
+  <script>
+    {{MARKED_SCRIPT}}
+  </script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      background: transparent;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', 'Noto Sans CJK SC', 'Noto Sans CJK TC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'WenQuanYi Micro Hei', Helvetica, Arial, sans-serif;
+      margin: 0;
+      padding: 30px;
+    }
+
+    #markdown-container {
+      background: #1c2128;
+      border-radius: 12px;
+      padding: 40px;
+      padding-bottom: 70px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5),
+                  0 0 0 1px rgba(255, 255, 255, 0.1);
+      width: 850px;
+      color: #adbac7;
+      line-height: 1.7;
+      word-wrap: break-word;
+      overflow-wrap: break-word;
+      position: relative;
+    }
+
+    #watermark {
+      position: absolute;
+      bottom: 12px;
+      right: 20px;
+      font-size: 11px;
+      color: rgba(173, 186, 199, 0.6);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+      letter-spacing: 0.5px;
+      user-select: none;
+      pointer-events: none;
+      display: block !important;
+      visibility: visible !important;
+      opacity: 1 !important;
+      z-index: 1000;
+    }
+
+    /* GitHub Dark Dimmed theme styles */
+    #markdown-content {
+      color: #adbac7;
+    }
+
+    #markdown-content h1,
+    #markdown-content h2,
+    #markdown-content h3,
+    #markdown-content h4,
+    #markdown-content h5,
+    #markdown-content h6 {
+      color: #adbac7;
+      font-weight: 600;
+      line-height: 1.25;
+      margin-top: 24px;
+      margin-bottom: 16px;
+    }
+
+    #markdown-content h1 {
+      font-size: 2em;
+      border-bottom: 1px solid #373e47;
+      padding-bottom: 0.3em;
+    }
+
+    #markdown-content h2 {
+      font-size: 1.5em;
+      border-bottom: 1px solid #373e47;
+      padding-bottom: 0.3em;
+    }
+
+    #markdown-content h3 {
+      font-size: 1.25em;
+    }
+
+    #markdown-content p {
+      margin-bottom: 16px;
+    }
+
+    #markdown-content code {
+      background-color: rgba(110, 118, 129, 0.4);
+      border-radius: 6px;
+      padding: 0.2em 0.4em;
+      font-size: 85%;
+      font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+      color: #f47067;
+    }
+
+    #markdown-content pre {
+      background-color: #22272e;
+      border-radius: 6px;
+      padding: 16px;
+      overflow: auto;
+      margin-bottom: 16px;
+      border: 1px solid #373e47;
+    }
+
+    #markdown-content pre code {
+      background-color: transparent;
+      padding: 0;
+      color: #adbac7;
+      font-size: 85%;
+      line-height: 1.45;
+      display: block;
+      overflow-x: auto;
+    }
+
+    #markdown-content blockquote {
+      padding: 0 1em;
+      color: #768390;
+      border-left: 0.25em solid #373e47;
+      margin: 0 0 16px 0;
+    }
+
+    #markdown-content ul,
+    #markdown-content ol {
+      margin-bottom: 16px;
+      padding-left: 2em;
+    }
+
+    #markdown-content li {
+      margin-bottom: 0.25em;
+    }
+
+    #markdown-content a {
+      color: #539bf5;
+      text-decoration: none;
+    }
+
+    #markdown-content a:hover {
+      text-decoration: underline;
+    }
+
+    #markdown-content img {
+      max-width: 100%;
+      height: auto;
+      border-radius: 6px;
+      margin: 16px 0;
+    }
+
+    #markdown-content table {
+      border-collapse: collapse;
+      width: 100%;
+      margin-bottom: 16px;
+      border: 1px solid #373e47;
+    }
+
+    #markdown-content table th,
+    #markdown-content table td {
+      border: 1px solid #373e47;
+      padding: 6px 13px;
+    }
+
+    #markdown-content table th {
+      background-color: #22272e;
+      font-weight: 600;
+    }
+
+    #markdown-content table tr:nth-child(2n) {
+      background-color: #22272e;
+    }
+
+    #markdown-content hr {
+      height: 0.25em;
+      padding: 0;
+      margin: 24px 0;
+      background-color: #373e47;
+      border: 0;
+    }
+
+    #markdown-content strong {
+      font-weight: 600;
+      color: #adbac7;
+    }
+
+    #markdown-content em {
+      font-style: italic;
+    }
+
+    /* Syntax highlighting colors (basic) */
+    #markdown-content pre code .keyword {
+      color: #f47067;
+    }
+
+    #markdown-content pre code .string {
+      color: #96d0ff;
+    }
+
+    #markdown-content pre code .comment {
+      color: #768390;
+      font-style: italic;
+    }
+
+    #markdown-content pre code .number {
+      color: #c690e4;
+    }
+  </style>
+</head>
+<body>
+  <div id="markdown-container">
+    <div id="markdown-content"></div>
+    <div id="watermark">powered by Garryling</div>
+  </div>
+
+  <script>
+    // Initialize render state
+    window.markdownRendered = false;
+    
+    // Wait for marked.js to load and then render
+    function renderMarkdown() {
+      console.log('renderMarkdown called');
+      
+      // Get markdown content from placeholder (base64 encoded)
+      const base64Markdown = '{{MARKDOWN_CONTENT}}';
+      let markdownText;
+      try {
+        // Decode base64 properly for UTF-8
+        const binaryString = atob(base64Markdown);
+        // Convert binary string to UTF-8 using TextDecoder
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        // Use TextDecoder for proper UTF-8 decoding
+        const decoder = new TextDecoder('utf-8');
+        markdownText = decoder.decode(bytes);
+        console.log('Markdown decoded, length:', markdownText.length);
+        console.log('Markdown preview:', markdownText.substring(0, 50));
+      } catch (error) {
+        console.error('Error decoding base64:', error);
+        // Fallback: try simple atob
+        try {
+          markdownText = atob(base64Markdown);
+          console.log('Using fallback atob decoding');
+        } catch (e2) {
+          document.getElementById('markdown-content').innerHTML = '<p>Error: Invalid markdown data</p>';
+          window.markdownRendered = true;
+          return;
+        }
+      }
+
+      // Check if marked is available
+      if (typeof marked === 'undefined') {
+        console.error('Marked library not loaded');
+        document.getElementById('markdown-content').innerHTML = '<p>Error: Markdown library not loaded</p>';
+        window.markdownRendered = true; // Set to true even on error so we don't hang
+        return;
+      }
+
+      console.log('Marked is available, configuring...');
+
+      // Configure marked
+      marked.setOptions({
+        breaks: true,
+        gfm: true,
+        headerIds: false,
+        mangle: false
+      });
+
+      // Render markdown to HTML
+      try {
+        const html = marked.parse(markdownText);
+        document.getElementById('markdown-content').innerHTML = html;
+        console.log('Markdown parsed and inserted into DOM');
+        
+        // Ensure watermark is visible
+        const watermark = document.getElementById('watermark');
+        if (watermark) {
+          watermark.style.display = 'block';
+          watermark.style.visibility = 'visible';
+          console.log('Watermark element found and made visible');
+        } else {
+          console.error('Watermark element not found!');
+        }
+        
+        // Force a reflow to ensure dimensions are correct
+        const container = document.getElementById('markdown-container');
+        container.offsetHeight; // Trigger reflow
+        
+        // Wait for images and fonts to load
+        const images = document.querySelectorAll('img');
+        if (images.length > 0) {
+          let loadedCount = 0;
+          images.forEach((img, index) => {
+            if (img.complete) {
+              loadedCount++;
+            } else {
+              img.onload = () => {
+                loadedCount++;
+                if (loadedCount === images.length) {
+                  finalizeRender();
+                }
+              };
+              img.onerror = () => {
+                loadedCount++;
+                if (loadedCount === images.length) {
+                  finalizeRender();
+                }
+              };
+            }
+          });
+          if (loadedCount === images.length) {
+            finalizeRender();
+          }
+        } else {
+          finalizeRender();
+        }
+        
+        function finalizeRender() {
+          // Small delay to ensure rendering is complete
+          setTimeout(() => {
+            // Signal that rendering is complete
+            window.markdownRendered = true;
+            console.log('Markdown rendering complete, flag set to true');
+          }, 200);
+        }
+      } catch (error) {
+        console.error('Error parsing markdown:', error);
+        document.getElementById('markdown-content').innerHTML = '<p>Error rendering markdown: ' + error.message + '</p>';
+        window.markdownRendered = true; // Set to true even on error so we don't hang
+      }
+    }
+
+    // Try to render immediately if marked is already loaded
+    if (typeof marked !== 'undefined') {
+      console.log('Marked already loaded, rendering immediately');
+      renderMarkdown();
+    } else {
+      console.log('Waiting for marked to load...');
+      // Wait for the script to load
+      const checkMarked = setInterval(() => {
+        if (typeof marked !== 'undefined') {
+          console.log('Marked loaded, rendering...');
+          clearInterval(checkMarked);
+          renderMarkdown();
+        }
+      }, 50);
+      
+      // Fallback: also check on window load
+      window.addEventListener('load', () => {
+        clearInterval(checkMarked);
+        setTimeout(() => {
+          if (typeof marked !== 'undefined') {
+            renderMarkdown();
+          } else {
+            console.error('Marked still not loaded after page load');
+            document.getElementById('markdown-content').innerHTML = '<p>Error: Markdown library failed to load</p>';
+            window.markdownRendered = true; // Set to true so we don't hang
+          }
+        }, 100);
+      });
+    }
+  </script>
+</body>
+</html>
+
