@@ -1603,50 +1603,51 @@ async function correctGrammar() {
   try {
     isGrammarProcessing = true;
     
+    // 等待用户松开快捷键，避免焦点问题
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
     // 保存当前剪贴板内容
     const originalClipboard = clipboard.readText();
+    console.log('Original clipboard:', originalClipboard ? originalClipboard.substring(0, 50) + '...' : '(empty)');
+    
+    // 清空剪贴板，以便检测复制是否成功
+    clipboard.writeText('');
     
     // 模拟 Cmd+C / Ctrl+C 复制选中的文本
     console.log('Simulating copy command...');
     await simulateKeyboard('copy');
     
-    // 等待剪贴板更新
-    await new Promise(resolve => setTimeout(resolve, 150));
+    // 等待剪贴板更新（增加等待时间）
+    await new Promise(resolve => setTimeout(resolve, 300));
     
     // 读取剪贴板中选中的文本
     const selectedText = clipboard.readText();
+    console.log('After copy, clipboard:', selectedText ? selectedText.substring(0, 50) + '...' : '(empty)');
     
     if (!selectedText || selectedText.trim().length === 0) {
+      console.log('No text selected, showing notification...');
       // 恢复原来的剪贴板内容
       if (originalClipboard) {
         clipboard.writeText(originalClipboard);
       }
       
-      if (Notification.isSupported()) {
-        new Notification({
-          title: '没有选中文本',
-          body: '请先选中一段文字再按快捷键',
-          silent: false
-        }).show();
-      }
+      new Notification({
+        title: '没有选中文本',
+        body: '请先用鼠标拖选文字（使其高亮），再按快捷键',
+        silent: false
+      }).show();
+      console.log('Notification shown');
       return;
-    }
-    
-    // 如果选中的文本和原来剪贴板一样，说明可能没有选中新文本
-    if (selectedText === originalClipboard) {
-      console.log('Warning: Selected text same as clipboard, user might not have selected anything');
     }
     
     console.log('Selected text:', selectedText.substring(0, 100) + '...');
     
     // 显示处理中通知
-    if (Notification.isSupported()) {
-      new Notification({
-        title: '🔄 正在处理...',
-        body: '正在调用 AI 修正语法，请稍候',
-        silent: true
-      }).show();
-    }
+    new Notification({
+      title: '🔄 正在处理...',
+      body: '正在调用 AI 修正语法，请稍候',
+      silent: true
+    }).show();
     
     // 调用 API
     const result = await callSiliconFlowAPI(selectedText);
@@ -1987,45 +1988,51 @@ async function translateText() {
   try {
     isTranslateProcessing = true;
     
+    // 等待用户松开快捷键，避免焦点问题
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
     // 保存当前剪贴板内容
     const originalClipboard = clipboard.readText();
+    console.log('Original clipboard:', originalClipboard ? originalClipboard.substring(0, 50) + '...' : '(empty)');
+    
+    // 清空剪贴板，以便检测复制是否成功
+    clipboard.writeText('');
     
     // 模拟 Cmd+C / Ctrl+C 复制选中的文本
     console.log('Simulating copy command...');
     await simulateKeyboard('copy');
     
-    // 等待剪贴板更新
-    await new Promise(resolve => setTimeout(resolve, 150));
+    // 等待剪贴板更新（增加等待时间）
+    await new Promise(resolve => setTimeout(resolve, 300));
     
     // 读取剪贴板中选中的文本
     const selectedText = clipboard.readText();
+    console.log('After copy, clipboard:', selectedText ? selectedText.substring(0, 50) + '...' : '(empty)');
     
     if (!selectedText || selectedText.trim().length === 0) {
+      console.log('No text selected, showing notification...');
       // 恢复原来的剪贴板内容
       if (originalClipboard) {
         clipboard.writeText(originalClipboard);
       }
       
-      if (Notification.isSupported()) {
-        new Notification({
-          title: '没有选中文本',
-          body: '请先选中一段文字再按快捷键',
-          silent: false
-        }).show();
-      }
+      new Notification({
+        title: '没有选中文本',
+        body: '请先用鼠标拖选文字（使其高亮），再按快捷键',
+        silent: false
+      }).show();
+      console.log('Notification shown');
       return;
     }
     
     console.log('Selected text:', selectedText.substring(0, 100) + '...');
-    
+
     // 显示处理中通知
-    if (Notification.isSupported()) {
-      new Notification({
-        title: '🔄 正在翻译...',
-        body: '正在调用 AI 翻译，请稍候',
-        silent: true
-      }).show();
-    }
+    new Notification({
+      title: '🔄 正在翻译...',
+      body: '正在调用 AI 翻译，请稍候',
+      silent: true
+    }).show();
     
     // 调用 API
     const translatedText = await callTranslateAPI(selectedText);
