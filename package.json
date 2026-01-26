@@ -32,7 +32,12 @@
     "mac": {
       "category": "public.app-category.productivity",
       "icon": "build_icon.png",
-      "target": ["dmg", "zip"]
+      "target": ["dmg", "zip"],
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "entitlements": null,
+      "entitlementsInherit": null
     },
     "win": {
       "icon": "build_icon.png",
@@ -45,6 +50,9 @@
     "files": [
       "main.js",
       "preload.js",
+      "preload-grammar.js",
+      "preload-settings.js",
+      "preload-translate.js",
       "renderer-template.html",
       "icon.png",
       "build_icon.png",

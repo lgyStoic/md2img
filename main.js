@@ -1,12 +1,70 @@
-const { app, BrowserWindow, Tray, Menu, clipboard, nativeImage, Notification, globalShortcut } = require('electron');
+const { app, BrowserWindow, Tray, Menu, clipboard, nativeImage, Notification, globalShortcut, dialog, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const https = require('https');
+const { exec } = require('child_process');
 
 let tray = null;
 let renderWindow = null;
+let grammarWindow = null;
+let settingsWindow = null;
 let lastProcessedText = '';
 let lastProcessedHash = '';
 let isProcessing = false;
+let isGrammarProcessing = false;
+let isTranslateProcessing = false;
+let translateWindow = null;
+
+// SiliconFlow API 配置
+const SILICONFLOW_API_URL = 'https://api.siliconflow.cn/v1/chat/completions';
+const DEFAULT_MODEL = 'Qwen/Qwen2.5-7B-Instruct';
+
+// 配置文件路径
+function getConfigPath() {
+  return path.join(app.getPath('userData'), 'config.json');
+}
+
+// 读取配置
+function loadConfig() {
+  try {
+    const configPath = getConfigPath();
+    if (fs.existsSync(configPath)) {
+      const data = fs.readFileSync(configPath, 'utf-8');
+      return JSON.parse(data);
+    }
+  } catch (error) {
+    console.error('Error loading config:', error);
+  }
+  return {
+    apiKey: '',
+    model: DEFAULT_MODEL
+  };
+}
+
+// 保存配置
+function saveConfig(config) {
+  try {
+    const configPath = getConfigPath();
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+    console.log('Config saved to:', configPath);
+    return true;
+  } catch (error) {
+    console.error('Error saving config:', error);
+    return false;
+  }
+}
+
+// 获取 API Key
+function getApiKey() {
+  const config = loadConfig();
+  return config.apiKey || process.env.SILICONFLOW_API_KEY || '';
+}
+
+// 获取模型
+function getModel() {
+  const config = loadConfig();
+  return config.model || DEFAULT_MODEL;
+}
 
 // Prevent dock icon from showing on macOS
 if (process.platform === 'darwin') {
@@ -15,21 +73,45 @@ if (process.platform === 'darwin') {
 
 // 获取开机自启动状态
 function getAutoLaunch() {
-  return app.getLoginItemSettings().openAtLogin;
+  const settings = app.getLoginItemSettings();
+  console.log('Login item settings:', settings);
+  return settings.openAtLogin;
 }
 
 // 设置开机自启动
 function setAutoLaunch(enable) {
-  app.setLoginItemSettings({
+  // 获取应用路径
+  const appPath = process.platform === 'darwin' 
+    ? app.getPath('exe').replace(/\.app\/Contents\/MacOS\/.*$/, '.app')
+    : app.getPath('exe');
+  
+  console.log('Setting auto launch:', enable);
+  console.log('App path:', appPath);
+  
+  const settings = {
     openAtLogin: enable,
     openAsHidden: true,  // 隐藏启动（托盘模式）
-  });
-  console.log('Auto launch:', enable ? 'enabled' : 'disabled');
+    path: appPath,
+  };
+  
+  // macOS 特殊处理
+  if (process.platform === 'darwin') {
+    settings.name = 'Md2Img';
+  }
+  
+  app.setLoginItemSettings(settings);
+  
+  // 验证设置
+  const newSettings = app.getLoginItemSettings();
+  console.log('Auto launch set to:', newSettings.openAtLogin);
 }
 
 app.whenReady().then(() => {
   createTray();
   registerGlobalShortcut();
+  registerGrammarShortcut();
+  registerTranslateShortcut();
+  setupIpcHandlers();
   // Auto-detection disabled - use shortcut instead
   // startClipboardWatcher();
   
@@ -90,6 +172,8 @@ function createTray() {
   }
   
   const shortcutKey = process.platform === 'darwin' ? 'Cmd+Shift+M' : 'Ctrl+Shift+M';
+  const grammarShortcutKey = process.platform === 'darwin' ? 'Cmd+Shift+G' : 'Ctrl+Shift+G';
+  const translateShortcutKey = process.platform === 'darwin' ? 'Cmd+Shift+T' : 'Ctrl+Shift+T';
   
   const contextMenu = Menu.buildFromTemplate([
     {
@@ -97,6 +181,20 @@ function createTray() {
       accelerator: shortcutKey,
       click: () => {
         convertClipboardToImage();
+      }
+    },
+    {
+      label: 'Grammar Correction (AI)',
+      accelerator: grammarShortcutKey,
+      click: () => {
+        correctGrammar();
+      }
+    },
+    {
+      label: 'Translate (AI)',
+      accelerator: translateShortcutKey,
+      click: () => {
+        translateText();
       }
     },
     { type: 'separator' },
@@ -117,6 +215,12 @@ function createTray() {
     },
     { type: 'separator' },
     {
+      label: 'Settings...',
+      click: () => {
+        showSettingsWindow();
+      }
+    },
+    {
       label: 'Show Debug Window',
       click: () => {
         if (renderWindow) {
@@ -134,7 +238,7 @@ function createTray() {
     }
   ]);
   
-  tray.setToolTip(`Markdown to Image Service\nPress ${shortcutKey} to convert`);
+  tray.setToolTip(`Markdown to Image Service\n${shortcutKey}: Convert to Image\n${grammarShortcutKey}: Grammar Correction\n${translateShortcutKey}: Translate`);
   tray.setContextMenu(contextMenu);
 }
 
@@ -708,5 +812,1242 @@ function startClipboardWatcher() {
   
   // Also check immediately
   processClipboard();
+}
+
+// ==================== 语法修正功能 ====================
+
+// 模拟键盘操作 (macOS 使用 AppleScript)
+function simulateKeyboard(key) {
+  return new Promise((resolve, reject) => {
+    if (process.platform === 'darwin') {
+      // macOS: 使用 AppleScript 模拟按键
+      let script;
+      if (key === 'copy') {
+        script = 'tell application "System Events" to keystroke "c" using command down';
+      } else if (key === 'paste') {
+        script = 'tell application "System Events" to keystroke "v" using command down';
+      } else {
+        reject(new Error('Unknown key: ' + key));
+        return;
+      }
+      
+      exec(`osascript -e '${script}'`, (error) => {
+        if (error) {
+          reject(error);
+        } else {
+          // 等待一下让系统处理
+          setTimeout(resolve, 100);
+        }
+      });
+    } else if (process.platform === 'win32') {
+      // Windows: 使用 PowerShell
+      let script;
+      if (key === 'copy') {
+        script = 'powershell -command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait(\'^c\')"';
+      } else if (key === 'paste') {
+        script = 'powershell -command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait(\'^v\')"';
+      } else {
+        reject(new Error('Unknown key: ' + key));
+        return;
+      }
+      
+      exec(script, (error) => {
+        if (error) {
+          reject(error);
+        } else {
+          setTimeout(resolve, 100);
+        }
+      });
+    } else {
+      // Linux: 使用 xdotool
+      let script;
+      if (key === 'copy') {
+        script = 'xdotool key ctrl+c';
+      } else if (key === 'paste') {
+        script = 'xdotool key ctrl+v';
+      } else {
+        reject(new Error('Unknown key: ' + key));
+        return;
+      }
+      
+      exec(script, (error) => {
+        if (error) {
+          reject(error);
+        } else {
+          setTimeout(resolve, 100);
+        }
+      });
+    }
+  });
+}
+
+// 调用 SiliconFlow API
+function callSiliconFlowAPI(text) {
+  return new Promise((resolve, reject) => {
+    const apiKey = getApiKey();
+    const model = getModel();
+    
+    if (!apiKey) {
+      reject(new Error('请先在设置中配置 SiliconFlow API Key'));
+      return;
+    }
+
+    const requestBody = JSON.stringify({
+      model: model,
+      messages: [
+        {
+          role: 'system',
+          content: `你是一个专业的语言润色助手。用户会给你一段文字，你需要：
+1. 修正其中的语法错误，并给出更好、更自然的表达方式
+2. 提供中英文对照翻译（如果原文是中文，翻译成英文；如果原文是英文，翻译成中文）
+
+请严格按照以下 JSON 格式返回，不要有任何其他内容：
+{
+  "corrected": "修正后的文本（保持原文语言）",
+  "original_translation": "原文的翻译",
+  "corrected_translation": "修正后文本的翻译"
+}`
+        },
+        {
+          role: 'user',
+          content: text
+        }
+      ],
+      temperature: 0.7,
+      max_tokens: 2048
+    });
+
+    const url = new URL(SILICONFLOW_API_URL);
+    
+    const options = {
+      hostname: url.hostname,
+      port: 443,
+      path: url.pathname,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Length': Buffer.byteLength(requestBody)
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
+      
+      res.on('end', () => {
+        try {
+          const response = JSON.parse(data);
+          if (response.error) {
+            reject(new Error(response.error.message || 'API 返回错误'));
+            return;
+          }
+          if (response.choices && response.choices[0] && response.choices[0].message) {
+            const content = response.choices[0].message.content.trim();
+            // 尝试解析 JSON 格式的响应
+            try {
+              // 移除可能的 markdown 代码块标记
+              let jsonStr = content;
+              if (jsonStr.startsWith('```json')) {
+                jsonStr = jsonStr.slice(7);
+              } else if (jsonStr.startsWith('```')) {
+                jsonStr = jsonStr.slice(3);
+              }
+              if (jsonStr.endsWith('```')) {
+                jsonStr = jsonStr.slice(0, -3);
+              }
+              jsonStr = jsonStr.trim();
+              
+              const result = JSON.parse(jsonStr);
+              resolve({
+                corrected: result.corrected || content,
+                originalTranslation: result.original_translation || '',
+                correctedTranslation: result.corrected_translation || ''
+              });
+            } catch (parseErr) {
+              // 如果解析失败，返回原始内容
+              resolve({
+                corrected: content,
+                originalTranslation: '',
+                correctedTranslation: ''
+              });
+            }
+          } else {
+            reject(new Error('API 返回格式不正确'));
+          }
+        } catch (e) {
+          reject(new Error('解析 API 响应失败: ' + e.message));
+        }
+      });
+    });
+
+    req.on('error', (e) => {
+      reject(new Error('API 请求失败: ' + e.message));
+    });
+
+    req.setTimeout(30000, () => {
+      req.destroy();
+      reject(new Error('API 请求超时'));
+    });
+
+    req.write(requestBody);
+    req.end();
+  });
+}
+
+// 注册语法修正快捷键
+function registerGrammarShortcut() {
+  const shortcut = 'CommandOrControl+Shift+G';
+  
+  console.log('Attempting to register grammar shortcut:', shortcut);
+  
+  const ret = globalShortcut.register(shortcut, () => {
+    console.log('=== GRAMMAR SHORTCUT TRIGGERED ===');
+    correctGrammar().then(() => {
+      console.log('correctGrammar completed');
+    }).catch(err => {
+      console.error('correctGrammar error:', err);
+    });
+  });
+
+  if (!ret) {
+    console.error('❌ Failed to register grammar shortcut:', shortcut);
+    if (Notification.isSupported()) {
+      new Notification({
+        title: 'Shortcut Registration Failed',
+        body: `Could not register ${shortcut}. It may be in use by another app.`,
+        silent: false
+      }).show();
+    }
+  } else {
+    console.log('✅ Grammar shortcut registered:', shortcut);
+  }
+}
+
+// 设置 IPC 处理程序
+function setupIpcHandlers() {
+  ipcMain.on('grammar-confirm', (event, confirmed) => {
+    if (grammarWindow && !grammarWindow.isDestroyed()) {
+      grammarWindow.close();
+    }
+  });
+  
+  ipcMain.on('grammar-replace', async (event, newText) => {
+    // 将修正后的文本写入剪贴板
+    clipboard.writeText(newText);
+    
+    // 关闭对话框
+    if (grammarWindow && !grammarWindow.isDestroyed()) {
+      grammarWindow.close();
+    }
+    
+    // 等待窗口关闭
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // 自动粘贴替换选中的文本
+    try {
+      await simulateKeyboard('paste');
+      
+      if (Notification.isSupported()) {
+        new Notification({
+          title: '✅ 已替换',
+          body: '选中的文本已被修正后的版本替换',
+          silent: true
+        }).show();
+      }
+    } catch (error) {
+      console.error('Paste error:', error);
+      if (Notification.isSupported()) {
+        new Notification({
+          title: '✅ 已复制到剪贴板',
+          body: '自动粘贴失败，请手动粘贴 (Cmd+V)',
+          silent: true
+        }).show();
+      }
+    }
+  });
+  
+  // 设置页面相关 IPC
+  ipcMain.on('get-settings', (event) => {
+    const config = loadConfig();
+    event.reply('settings-data', config);
+  });
+  
+  ipcMain.on('save-settings', (event, config) => {
+    const success = saveConfig(config);
+    event.reply('settings-saved', success);
+    
+    if (success && Notification.isSupported()) {
+      new Notification({
+        title: '✅ 设置已保存',
+        body: 'API 配置已更新',
+        silent: true
+      }).show();
+    }
+  });
+  
+  ipcMain.on('close-settings', () => {
+    if (settingsWindow && !settingsWindow.isDestroyed()) {
+      settingsWindow.close();
+    }
+  });
+  
+  // 翻译相关 IPC
+  ipcMain.on('translate-cancel', () => {
+    if (translateWindow && !translateWindow.isDestroyed()) {
+      translateWindow.close();
+    }
+  });
+  
+  ipcMain.on('translate-copy', (event, text) => {
+    clipboard.writeText(text);
+    
+    if (Notification.isSupported()) {
+      new Notification({
+        title: '✅ 已复制',
+        body: '译文已复制到剪贴板',
+        silent: true
+      }).show();
+    }
+    
+    if (translateWindow && !translateWindow.isDestroyed()) {
+      translateWindow.close();
+    }
+  });
+  
+  ipcMain.on('translate-replace', async (event, text) => {
+    clipboard.writeText(text);
+    
+    if (translateWindow && !translateWindow.isDestroyed()) {
+      translateWindow.close();
+    }
+    
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    try {
+      await simulateKeyboard('paste');
+      
+      if (Notification.isSupported()) {
+        new Notification({
+          title: '✅ 已替换',
+          body: '原文已被译文替换',
+          silent: true
+        }).show();
+      }
+    } catch (error) {
+      console.log('Auto paste not available:', error.message);
+      if (Notification.isSupported()) {
+        new Notification({
+          title: '✅ 已复制到剪贴板',
+          body: '请按 Cmd+V 粘贴译文',
+          silent: true
+        }).show();
+      }
+    }
+  });
+}
+
+// 显示设置窗口
+function showSettingsWindow() {
+  // 如果窗口已存在，直接显示
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.show();
+    settingsWindow.focus();
+    return;
+  }
+  
+  settingsWindow = new BrowserWindow({
+    width: 500,
+    height: 400,
+    show: false,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    title: '设置',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-settings.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    }
+  });
+  
+  const config = loadConfig();
+  
+  const htmlContent = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>设置</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      padding: 30px;
+      background: #f5f5f7;
+      color: #1d1d1f;
+    }
+    h2 {
+      font-size: 20px;
+      font-weight: 600;
+      margin-bottom: 25px;
+      color: #1d1d1f;
+    }
+    .form-group {
+      margin-bottom: 20px;
+    }
+    label {
+      display: block;
+      font-size: 13px;
+      font-weight: 500;
+      color: #86868b;
+      margin-bottom: 8px;
+    }
+    input, select {
+      width: 100%;
+      padding: 12px;
+      font-size: 14px;
+      border: 1px solid #d2d2d7;
+      border-radius: 8px;
+      background: white;
+      color: #1d1d1f;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    input:focus, select:focus {
+      border-color: #0071e3;
+    }
+    input::placeholder {
+      color: #86868b;
+    }
+    .hint {
+      font-size: 12px;
+      color: #86868b;
+      margin-top: 6px;
+    }
+    .hint a {
+      color: #0071e3;
+      text-decoration: none;
+    }
+    .buttons {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 30px;
+    }
+    button {
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-cancel {
+      background: #e8e8ed;
+      border: none;
+      color: #1d1d1f;
+    }
+    .btn-cancel:hover {
+      background: #d2d2d7;
+    }
+    .btn-save {
+      background: #0071e3;
+      border: none;
+      color: white;
+    }
+    .btn-save:hover {
+      background: #0077ed;
+    }
+    .status {
+      font-size: 13px;
+      margin-top: 15px;
+      padding: 10px;
+      border-radius: 6px;
+      display: none;
+    }
+    .status.success {
+      display: block;
+      background: #d4edda;
+      color: #155724;
+    }
+    .status.error {
+      display: block;
+      background: #f8d7da;
+      color: #721c24;
+    }
+  </style>
+</head>
+<body>
+  <h2>⚙️ SiliconFlow API 设置</h2>
+  
+  <div class="form-group">
+    <label>API Key</label>
+    <input type="password" id="apiKey" placeholder="sk-xxxxxxxxxxxxxxxx" value="${config.apiKey || ''}">
+    <div class="hint">在 <a href="#" onclick="openExternal('https://cloud.siliconflow.cn/')">SiliconFlow</a> 获取你的 API Key</div>
+  </div>
+  
+  <div class="form-group">
+    <label>模型</label>
+    <select id="model">
+      <option value="Qwen/Qwen2.5-7B-Instruct" ${config.model === 'Qwen/Qwen2.5-7B-Instruct' ? 'selected' : ''}>Qwen2.5-7B-Instruct (推荐)</option>
+      <option value="Qwen/Qwen2.5-14B-Instruct" ${config.model === 'Qwen/Qwen2.5-14B-Instruct' ? 'selected' : ''}>Qwen2.5-14B-Instruct</option>
+      <option value="Qwen/Qwen2.5-32B-Instruct" ${config.model === 'Qwen/Qwen2.5-32B-Instruct' ? 'selected' : ''}>Qwen2.5-32B-Instruct</option>
+      <option value="deepseek-ai/DeepSeek-V2.5" ${config.model === 'deepseek-ai/DeepSeek-V2.5' ? 'selected' : ''}>DeepSeek-V2.5</option>
+      <option value="THUDM/glm-4-9b-chat" ${config.model === 'THUDM/glm-4-9b-chat' ? 'selected' : ''}>GLM-4-9B-Chat</option>
+    </select>
+  </div>
+  
+  <div id="status" class="status"></div>
+  
+  <div class="buttons">
+    <button class="btn-cancel" onclick="cancel()">取消</button>
+    <button class="btn-save" onclick="save()">保存</button>
+  </div>
+  
+  <script>
+    function openExternal(url) {
+      window.electronSettings.openExternal(url);
+    }
+    
+    function cancel() {
+      window.electronSettings.close();
+    }
+    
+    function save() {
+      const apiKey = document.getElementById('apiKey').value.trim();
+      const model = document.getElementById('model').value;
+      
+      if (!apiKey) {
+        showStatus('请输入 API Key', 'error');
+        return;
+      }
+      
+      window.electronSettings.save({ apiKey, model });
+    }
+    
+    function showStatus(message, type) {
+      const status = document.getElementById('status');
+      status.textContent = message;
+      status.className = 'status ' + type;
+    }
+    
+    window.electronSettings.onSaved((success) => {
+      if (success) {
+        showStatus('设置已保存！', 'success');
+        setTimeout(() => {
+          window.electronSettings.close();
+        }, 1000);
+      } else {
+        showStatus('保存失败，请重试', 'error');
+      }
+    });
+  </script>
+</body>
+</html>
+  `;
+  
+  const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`;
+  
+  settingsWindow.loadURL(dataUrl);
+  settingsWindow.show();
+  
+  settingsWindow.on('closed', () => {
+    settingsWindow = null;
+  });
+}
+
+// 创建语法修正确认窗口
+async function showGrammarConfirmDialog(originalText, result) {
+  // 关闭之前的窗口
+  if (grammarWindow && !grammarWindow.isDestroyed()) {
+    grammarWindow.destroy();
+  }
+  
+  const correctedText = result.corrected;
+  const originalTranslation = result.originalTranslation || '';
+  const correctedTranslation = result.correctedTranslation || '';
+  
+  grammarWindow = new BrowserWindow({
+    width: 700,
+    height: 650,
+    show: false,
+    alwaysOnTop: true,
+    resizable: true,
+    minimizable: false,
+    maximizable: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-grammar.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    }
+  });
+  
+  // 构建 HTML
+  const htmlContent = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>语法修正</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      padding: 20px;
+      background: #f5f5f7;
+      color: #1d1d1f;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    h2 {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 15px;
+      color: #1d1d1f;
+    }
+    .comparison {
+      display: flex;
+      gap: 15px;
+      flex: 1;
+      min-height: 0;
+      margin-bottom: 15px;
+    }
+    .column {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+    .section {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      margin-bottom: 10px;
+      min-height: 0;
+    }
+    .label {
+      font-size: 13px;
+      font-weight: 500;
+      color: #86868b;
+      margin-bottom: 6px;
+    }
+    .text-box {
+      flex: 1;
+      padding: 10px;
+      background: white;
+      border: 1px solid #d2d2d7;
+      border-radius: 8px;
+      font-size: 13px;
+      line-height: 1.5;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    .text-box.original {
+      color: #86868b;
+      background: #fafafa;
+    }
+    .text-box.corrected {
+      color: #1d1d1f;
+      background: #fff;
+      border-color: #0071e3;
+    }
+    .text-box.translation {
+      color: #555;
+      background: #f0f7ff;
+      border-color: #b3d4fc;
+      font-size: 12px;
+    }
+    .column-header {
+      font-size: 14px;
+      font-weight: 600;
+      color: #1d1d1f;
+      margin-bottom: 10px;
+      padding-bottom: 8px;
+      border-bottom: 2px solid #e8e8ed;
+    }
+    .column-header.corrected-header {
+      border-bottom-color: #0071e3;
+    }
+    .buttons {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      padding-top: 10px;
+      border-top: 1px solid #e8e8ed;
+    }
+    button {
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-cancel {
+      background: #e8e8ed;
+      border: none;
+      color: #1d1d1f;
+    }
+    .btn-cancel:hover {
+      background: #d2d2d7;
+    }
+    .btn-confirm {
+      background: #0071e3;
+      border: none;
+      color: white;
+    }
+    .btn-confirm:hover {
+      background: #0077ed;
+    }
+  </style>
+</head>
+<body>
+  <h2>🔤 语法修正建议</h2>
+  
+  <div class="comparison">
+    <div class="column">
+      <div class="column-header">原文</div>
+      <div class="section">
+        <div class="label">内容：</div>
+        <div class="text-box original" id="original"></div>
+      </div>
+      <div class="section">
+        <div class="label">翻译对照：</div>
+        <div class="text-box translation" id="original-translation"></div>
+      </div>
+    </div>
+    
+    <div class="column">
+      <div class="column-header corrected-header">✨ 修正后</div>
+      <div class="section">
+        <div class="label">内容：</div>
+        <div class="text-box corrected" id="corrected"></div>
+      </div>
+      <div class="section">
+        <div class="label">翻译对照：</div>
+        <div class="text-box translation" id="corrected-translation"></div>
+      </div>
+    </div>
+  </div>
+  
+  <div class="buttons">
+    <button class="btn-cancel" onclick="cancel()">取消</button>
+    <button class="btn-confirm" onclick="confirm()">使用修正版本</button>
+  </div>
+  
+  <script>
+    const originalText = decodeURIComponent(atob('${Buffer.from(encodeURIComponent(originalText)).toString('base64')}'));
+    const correctedText = decodeURIComponent(atob('${Buffer.from(encodeURIComponent(correctedText)).toString('base64')}'));
+    const originalTranslation = decodeURIComponent(atob('${Buffer.from(encodeURIComponent(originalTranslation)).toString('base64')}'));
+    const correctedTranslation = decodeURIComponent(atob('${Buffer.from(encodeURIComponent(correctedTranslation)).toString('base64')}'));
+    
+    document.getElementById('original').textContent = originalText;
+    document.getElementById('corrected').textContent = correctedText;
+    document.getElementById('original-translation').textContent = originalTranslation || '(无翻译)';
+    document.getElementById('corrected-translation').textContent = correctedTranslation || '(无翻译)';
+    
+    function cancel() {
+      window.electronGrammar.cancel();
+    }
+    
+    function confirm() {
+      window.electronGrammar.replace(correctedText);
+    }
+  </script>
+</body>
+</html>
+  `;
+  
+  const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`;
+  
+  await grammarWindow.loadURL(dataUrl);
+  grammarWindow.show();
+  grammarWindow.focus();
+  
+  // 窗口关闭时清理
+  grammarWindow.on('closed', () => {
+    grammarWindow = null;
+  });
+}
+
+// 语法修正主函数
+async function correctGrammar() {
+  console.log('=== correctGrammar START ===');
+  
+  if (isGrammarProcessing) {
+    console.log('Already processing grammar, skipping...');
+    if (Notification.isSupported()) {
+      new Notification({
+        title: '处理中',
+        body: '请等待当前处理完成',
+        silent: true
+      }).show();
+    }
+    return;
+  }
+  
+  try {
+    isGrammarProcessing = true;
+    
+    // 保存当前剪贴板内容
+    const originalClipboard = clipboard.readText();
+    
+    // 模拟 Cmd+C / Ctrl+C 复制选中的文本
+    console.log('Simulating copy command...');
+    await simulateKeyboard('copy');
+    
+    // 等待剪贴板更新
+    await new Promise(resolve => setTimeout(resolve, 150));
+    
+    // 读取剪贴板中选中的文本
+    const selectedText = clipboard.readText();
+    
+    if (!selectedText || selectedText.trim().length === 0) {
+      // 恢复原来的剪贴板内容
+      if (originalClipboard) {
+        clipboard.writeText(originalClipboard);
+      }
+      
+      if (Notification.isSupported()) {
+        new Notification({
+          title: '没有选中文本',
+          body: '请先选中一段文字再按快捷键',
+          silent: false
+        }).show();
+      }
+      return;
+    }
+    
+    // 如果选中的文本和原来剪贴板一样，说明可能没有选中新文本
+    if (selectedText === originalClipboard) {
+      console.log('Warning: Selected text same as clipboard, user might not have selected anything');
+    }
+    
+    console.log('Selected text:', selectedText.substring(0, 100) + '...');
+    
+    // 显示处理中通知
+    if (Notification.isSupported()) {
+      new Notification({
+        title: '🔄 正在处理...',
+        body: '正在调用 AI 修正语法，请稍候',
+        silent: true
+      }).show();
+    }
+    
+    // 调用 API
+    const result = await callSiliconFlowAPI(selectedText);
+    
+    console.log('Corrected text:', result.corrected.substring(0, 100) + '...');
+    console.log('Original translation:', result.originalTranslation);
+    console.log('Corrected translation:', result.correctedTranslation);
+    
+    // 显示确认对话框
+    await showGrammarConfirmDialog(selectedText, result);
+    
+  } catch (error) {
+    console.error('Grammar correction error:', error);
+    
+    if (Notification.isSupported()) {
+      new Notification({
+        title: '❌ 修正失败',
+        body: error.message,
+        silent: false
+      }).show();
+    }
+  } finally {
+    isGrammarProcessing = false;
+    console.log('=== correctGrammar END ===');
+  }
+}
+
+// ==================== 翻译功能 ====================
+
+// 调用翻译 API
+function callTranslateAPI(text) {
+  return new Promise((resolve, reject) => {
+    const apiKey = getApiKey();
+    const model = getModel();
+    
+    if (!apiKey) {
+      reject(new Error('请先在设置中配置 SiliconFlow API Key'));
+      return;
+    }
+
+    const requestBody = JSON.stringify({
+      model: model,
+      messages: [
+        {
+          role: 'system',
+          content: `你是一个专业的翻译助手。用户会给你一段文字，请翻译成另一种语言：
+- 如果原文是中文，翻译成英文
+- 如果原文是英文，翻译成中文
+- 如果原文是其他语言，翻译成中文
+
+只需要直接返回翻译后的文字，不需要任何解释、说明或其他额外内容。`
+        },
+        {
+          role: 'user',
+          content: text
+        }
+      ],
+      temperature: 0.3,
+      max_tokens: 2048
+    });
+
+    const url = new URL(SILICONFLOW_API_URL);
+    
+    const options = {
+      hostname: url.hostname,
+      port: 443,
+      path: url.pathname,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Length': Buffer.byteLength(requestBody)
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
+      
+      res.on('end', () => {
+        try {
+          const response = JSON.parse(data);
+          if (response.error) {
+            reject(new Error(response.error.message || 'API 返回错误'));
+            return;
+          }
+          if (response.choices && response.choices[0] && response.choices[0].message) {
+            resolve(response.choices[0].message.content.trim());
+          } else {
+            reject(new Error('API 返回格式不正确'));
+          }
+        } catch (e) {
+          reject(new Error('解析 API 响应失败: ' + e.message));
+        }
+      });
+    });
+
+    req.on('error', (e) => {
+      reject(new Error('API 请求失败: ' + e.message));
+    });
+
+    req.setTimeout(30000, () => {
+      req.destroy();
+      reject(new Error('API 请求超时'));
+    });
+
+    req.write(requestBody);
+    req.end();
+  });
+}
+
+// 注册翻译快捷键
+function registerTranslateShortcut() {
+  const shortcut = 'CommandOrControl+Shift+T';
+  
+  console.log('Attempting to register translate shortcut:', shortcut);
+  
+  const ret = globalShortcut.register(shortcut, () => {
+    console.log('=== TRANSLATE SHORTCUT TRIGGERED ===');
+    translateText().then(() => {
+      console.log('translateText completed');
+    }).catch(err => {
+      console.error('translateText error:', err);
+    });
+  });
+
+  if (!ret) {
+    console.error('❌ Failed to register translate shortcut:', shortcut);
+    if (Notification.isSupported()) {
+      new Notification({
+        title: 'Shortcut Registration Failed',
+        body: `Could not register ${shortcut}. It may be in use by another app.`,
+        silent: false
+      }).show();
+    }
+  } else {
+    console.log('✅ Translate shortcut registered:', shortcut);
+  }
+}
+
+// 创建翻译结果窗口
+async function showTranslateDialog(originalText, translatedText) {
+  // 关闭之前的窗口
+  if (translateWindow && !translateWindow.isDestroyed()) {
+    translateWindow.destroy();
+  }
+  
+  translateWindow = new BrowserWindow({
+    width: 600,
+    height: 450,
+    show: false,
+    alwaysOnTop: true,
+    resizable: true,
+    minimizable: false,
+    maximizable: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-translate.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    }
+  });
+  
+  // 构建 HTML
+  const htmlContent = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>翻译</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      padding: 20px;
+      background: #f5f5f7;
+      color: #1d1d1f;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    h2 {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 15px;
+      color: #1d1d1f;
+    }
+    .section {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      margin-bottom: 15px;
+      min-height: 0;
+    }
+    .label {
+      font-size: 13px;
+      font-weight: 500;
+      color: #86868b;
+      margin-bottom: 8px;
+    }
+    .text-box {
+      flex: 1;
+      padding: 12px;
+      background: white;
+      border: 1px solid #d2d2d7;
+      border-radius: 8px;
+      font-size: 14px;
+      line-height: 1.6;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    .text-box.original {
+      color: #86868b;
+      background: #fafafa;
+    }
+    .text-box.translated {
+      color: #1d1d1f;
+      background: #fff;
+      border-color: #34c759;
+    }
+    .buttons {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      padding-top: 10px;
+    }
+    button {
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-cancel {
+      background: #e8e8ed;
+      border: none;
+      color: #1d1d1f;
+    }
+    .btn-cancel:hover {
+      background: #d2d2d7;
+    }
+    .btn-copy {
+      background: #34c759;
+      border: none;
+      color: white;
+    }
+    .btn-copy:hover {
+      background: #2db550;
+    }
+    .btn-replace {
+      background: #0071e3;
+      border: none;
+      color: white;
+    }
+    .btn-replace:hover {
+      background: #0077ed;
+    }
+  </style>
+</head>
+<body>
+  <h2>🌐 翻译结果</h2>
+  
+  <div class="section">
+    <div class="label">原文：</div>
+    <div class="text-box original" id="original"></div>
+  </div>
+  
+  <div class="section">
+    <div class="label">译文：</div>
+    <div class="text-box translated" id="translated"></div>
+  </div>
+  
+  <div class="buttons">
+    <button class="btn-cancel" onclick="cancel()">关闭</button>
+    <button class="btn-copy" onclick="copyOnly()">仅复制</button>
+    <button class="btn-replace" onclick="replace()">替换原文</button>
+  </div>
+  
+  <script>
+    const originalText = decodeURIComponent(atob('${Buffer.from(encodeURIComponent(originalText)).toString('base64')}'));
+    const translatedText = decodeURIComponent(atob('${Buffer.from(encodeURIComponent(translatedText)).toString('base64')}'));
+    
+    document.getElementById('original').textContent = originalText;
+    document.getElementById('translated').textContent = translatedText;
+    
+    function cancel() {
+      window.electronTranslate.cancel();
+    }
+    
+    function copyOnly() {
+      window.electronTranslate.copy(translatedText);
+    }
+    
+    function replace() {
+      window.electronTranslate.replace(translatedText);
+    }
+  </script>
+</body>
+</html>
+  `;
+  
+  const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`;
+  
+  await translateWindow.loadURL(dataUrl);
+  translateWindow.show();
+  translateWindow.focus();
+  
+  // 窗口关闭时清理
+  translateWindow.on('closed', () => {
+    translateWindow = null;
+  });
+}
+
+// 翻译主函数
+async function translateText() {
+  console.log('=== translateText START ===');
+  
+  if (isTranslateProcessing) {
+    console.log('Already processing translation, skipping...');
+    if (Notification.isSupported()) {
+      new Notification({
+        title: '处理中',
+        body: '请等待当前翻译完成',
+        silent: true
+      }).show();
+    }
+    return;
+  }
+  
+  try {
+    isTranslateProcessing = true;
+    
+    // 保存当前剪贴板内容
+    const originalClipboard = clipboard.readText();
+    
+    // 模拟 Cmd+C / Ctrl+C 复制选中的文本
+    console.log('Simulating copy command...');
+    await simulateKeyboard('copy');
+    
+    // 等待剪贴板更新
+    await new Promise(resolve => setTimeout(resolve, 150));
+    
+    // 读取剪贴板中选中的文本
+    const selectedText = clipboard.readText();
+    
+    if (!selectedText || selectedText.trim().length === 0) {
+      // 恢复原来的剪贴板内容
+      if (originalClipboard) {
+        clipboard.writeText(originalClipboard);
+      }
+      
+      if (Notification.isSupported()) {
+        new Notification({
+          title: '没有选中文本',
+          body: '请先选中一段文字再按快捷键',
+          silent: false
+        }).show();
+      }
+      return;
+    }
+    
+    console.log('Selected text:', selectedText.substring(0, 100) + '...');
+    
+    // 显示处理中通知
+    if (Notification.isSupported()) {
+      new Notification({
+        title: '🔄 正在翻译...',
+        body: '正在调用 AI 翻译，请稍候',
+        silent: true
+      }).show();
+    }
+    
+    // 调用 API
+    const translatedText = await callTranslateAPI(selectedText);
+    
+    console.log('Translated text:', translatedText.substring(0, 100) + '...');
+    
+    // 显示结果对话框
+    await showTranslateDialog(selectedText, translatedText);
+    
+  } catch (error) {
+    console.error('Translation error:', error);
+    
+    if (Notification.isSupported()) {
+      new Notification({
+        title: '❌ 翻译失败',
+        body: error.message,
+        silent: false
+      }).show();
+    }
+  } finally {
+    isTranslateProcessing = false;
+    console.log('=== translateText END ===');
+  }
 }
 
