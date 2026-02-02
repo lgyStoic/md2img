@@ -32,15 +32,65 @@ function loadConfig() {
     const configPath = getConfigPath();
     if (fs.existsSync(configPath)) {
       const data = fs.readFileSync(configPath, 'utf-8');
-      return JSON.parse(data);
+      const config = JSON.parse(data);
+      // 确保 tokenStats 字段存在
+      if (!config.tokenStats) {
+        config.tokenStats = getDefaultTokenStats();
+      }
+      return config;
     }
   } catch (error) {
     console.error('Error loading config:', error);
   }
   return {
     apiKey: '',
-    model: DEFAULT_MODEL
+    model: DEFAULT_MODEL,
+    tokenStats: getDefaultTokenStats()
   };
+}
+
+// 默认 token 统计结构
+function getDefaultTokenStats() {
+  return {
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    totalTokens: 0,
+    callCount: 0,
+    lastResetDate: new Date().toISOString()
+  };
+}
+
+// 更新 token 统计
+function updateTokenStats(usage) {
+  if (!usage) return;
+  
+  const config = loadConfig();
+  const stats = config.tokenStats || getDefaultTokenStats();
+  
+  stats.totalInputTokens += usage.prompt_tokens || 0;
+  stats.totalOutputTokens += usage.completion_tokens || 0;
+  stats.totalTokens += usage.total_tokens || 0;
+  stats.callCount += 1;
+  
+  config.tokenStats = stats;
+  saveConfig(config);
+  
+  console.log('Token stats updated:', stats);
+}
+
+// 重置 token 统计
+function resetTokenStats() {
+  const config = loadConfig();
+  config.tokenStats = getDefaultTokenStats();
+  saveConfig(config);
+  console.log('Token stats reset');
+  return config.tokenStats;
+}
+
+// 获取 token 统计
+function getTokenStats() {
+  const config = loadConfig();
+  return config.tokenStats || getDefaultTokenStats();
 }
 
 // 保存配置
@@ -174,10 +224,10 @@ function createTray() {
     return;
   }
   
-  const shortcutKey = process.platform === 'darwin' ? 'Cmd+Shift+M' : 'Ctrl+Shift+M';
-  const grammarShortcutKey = process.platform === 'darwin' ? 'Cmd+Shift+G' : 'Ctrl+Shift+G';
-  const translateShortcutKey = process.platform === 'darwin' ? 'Cmd+Shift+T' : 'Ctrl+Shift+T';
-  const explainShortcutKey = process.platform === 'darwin' ? 'Cmd+Shift+E' : 'Ctrl+Shift+E';
+  const shortcutKey = process.platform === 'darwin' ? '⌥⇧M' : 'Alt+Shift+M';
+  const grammarShortcutKey = process.platform === 'darwin' ? '⌥⇧G' : 'Alt+Shift+G';
+  const translateShortcutKey = process.platform === 'darwin' ? '⌥⇧T' : 'Alt+Shift+T';
+  const explainShortcutKey = process.platform === 'darwin' ? '⌥⇧E' : 'Alt+Shift+E';
   
   const contextMenu = Menu.buildFromTemplate([
     {
@@ -255,7 +305,7 @@ function createTray() {
 
 function registerGlobalShortcut() {
   // Register global shortcut: Cmd+Shift+M (Mac) or Ctrl+Shift+M (Windows/Linux)
-  const shortcut = 'CommandOrControl+Shift+M';
+  const shortcut = 'Alt+Shift+M';
   
   console.log('Attempting to register shortcut:', shortcut);
   console.log('Platform:', process.platform);
@@ -957,6 +1007,11 @@ function callSiliconFlowAPI(text) {
             return;
           }
           if (response.choices && response.choices[0] && response.choices[0].message) {
+            // 记录 token 使用
+            if (response.usage) {
+              updateTokenStats(response.usage);
+            }
+            
             const content = response.choices[0].message.content.trim();
             // 尝试解析 JSON 格式的响应
             try {
@@ -1011,7 +1066,7 @@ function callSiliconFlowAPI(text) {
 
 // 注册语法修正快捷键
 function registerGrammarShortcut() {
-  const shortcut = 'CommandOrControl+Shift+G';
+  const shortcut = 'Alt+Shift+G';
   
   console.log('Attempting to register grammar shortcut:', shortcut);
   
@@ -1085,6 +1140,25 @@ function setupIpcHandlers() {
   ipcMain.on('get-settings', (event) => {
     const config = loadConfig();
     event.reply('settings-data', config);
+  });
+  
+  // Token 统计相关 IPC
+  ipcMain.on('get-token-stats', (event) => {
+    const stats = getTokenStats();
+    event.reply('token-stats-data', stats);
+  });
+  
+  ipcMain.on('reset-token-stats', (event) => {
+    const stats = resetTokenStats();
+    event.reply('token-stats-reset', stats);
+    
+    if (Notification.isSupported()) {
+      new Notification({
+        title: '✅ 统计已重置',
+        body: 'Token 使用统计已清零',
+        silent: true
+      }).show();
+    }
   });
   
   ipcMain.on('save-settings', (event, config) => {
@@ -1195,7 +1269,7 @@ function showSettingsWindow() {
   
   settingsWindow = new BrowserWindow({
     width: 520,
-    height: 450,
+    height: 580,
     show: false,
     resizable: false,
     minimizable: false,
@@ -1317,6 +1391,63 @@ function showSettingsWindow() {
       background: #f8d7da;
       color: #721c24;
     }
+    .stats-section {
+      margin-top: 20px;
+      padding: 15px;
+      background: #fff;
+      border: 1px solid #d2d2d7;
+      border-radius: 8px;
+    }
+    .stats-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .stats-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #1d1d1f;
+    }
+    .btn-reset {
+      padding: 4px 10px;
+      font-size: 12px;
+      background: #ff3b30;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .btn-reset:hover {
+      background: #e6352b;
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+    }
+    .stat-item {
+      display: flex;
+      justify-content: space-between;
+      padding: 8px 10px;
+      background: #f5f5f7;
+      border-radius: 6px;
+    }
+    .stat-label {
+      font-size: 12px;
+      color: #86868b;
+    }
+    .stat-value {
+      font-size: 13px;
+      font-weight: 600;
+      color: #1d1d1f;
+    }
+    .stats-footer {
+      margin-top: 10px;
+      font-size: 11px;
+      color: #86868b;
+      text-align: right;
+    }
   </style>
 </head>
 <body>
@@ -1370,6 +1501,32 @@ function showSettingsWindow() {
     </select>
   </div>
   
+  <div class="stats-section">
+    <div class="stats-header">
+      <span class="stats-title">📊 Token 使用统计</span>
+      <button class="btn-reset" onclick="resetStats()">重置</button>
+    </div>
+    <div class="stats-grid">
+      <div class="stat-item">
+        <span class="stat-label">调用次数</span>
+        <span class="stat-value" id="callCount">-</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">输入 Tokens</span>
+        <span class="stat-value" id="inputTokens">-</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">输出 Tokens</span>
+        <span class="stat-value" id="outputTokens">-</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">总计 Tokens</span>
+        <span class="stat-value" id="totalTokens">-</span>
+      </div>
+    </div>
+    <div class="stats-footer" id="statsFooter"></div>
+  </div>
+  
   <div id="status" class="status"></div>
   
   <div class="buttons">
@@ -1404,6 +1561,30 @@ function showSettingsWindow() {
       status.className = 'status ' + type;
     }
     
+    function formatNumber(num) {
+      if (num >= 1000000) return (num / 1000000).toFixed(2) + 'M';
+      if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+      return num.toString();
+    }
+    
+    function updateStatsDisplay(stats) {
+      document.getElementById('callCount').textContent = stats.callCount || 0;
+      document.getElementById('inputTokens').textContent = formatNumber(stats.totalInputTokens || 0);
+      document.getElementById('outputTokens').textContent = formatNumber(stats.totalOutputTokens || 0);
+      document.getElementById('totalTokens').textContent = formatNumber(stats.totalTokens || 0);
+      
+      if (stats.lastResetDate) {
+        const resetDate = new Date(stats.lastResetDate);
+        document.getElementById('statsFooter').textContent = '统计自 ' + resetDate.toLocaleDateString('zh-CN');
+      }
+    }
+    
+    function resetStats() {
+      if (confirm('确定要重置 Token 统计吗？')) {
+        window.electronSettings.resetTokenStats();
+      }
+    }
+    
     window.electronSettings.onSaved((success) => {
       if (success) {
         showStatus('设置已保存！', 'success');
@@ -1414,6 +1595,17 @@ function showSettingsWindow() {
         showStatus('保存失败，请重试', 'error');
       }
     });
+    
+    window.electronSettings.onTokenStats((stats) => {
+      updateStatsDisplay(stats);
+    });
+    
+    window.electronSettings.onTokenStatsReset((stats) => {
+      updateStatsDisplay(stats);
+    });
+    
+    // 页面加载时获取统计数据
+    window.electronSettings.getTokenStats();
   </script>
 </body>
 </html>
@@ -1803,6 +1995,10 @@ function callTranslateAPI(text) {
             return;
           }
           if (response.choices && response.choices[0] && response.choices[0].message) {
+            // 记录 token 使用
+            if (response.usage) {
+              updateTokenStats(response.usage);
+            }
             resolve(response.choices[0].message.content.trim());
           } else {
             reject(new Error('API 返回格式不正确'));
@@ -1829,7 +2025,7 @@ function callTranslateAPI(text) {
 
 // 注册翻译快捷键
 function registerTranslateShortcut() {
-  const shortcut = 'CommandOrControl+Shift+T';
+  const shortcut = 'Alt+Shift+T';
   
   console.log('Attempting to register translate shortcut:', shortcut);
   
@@ -2125,23 +2321,23 @@ async function translateText() {
 
 // ==================== 解释功能 ====================
 
-// 调用解释 API
-function callExplainAPI(text) {
-  return new Promise((resolve, reject) => {
-    const apiKey = getApiKey();
-    const model = getModel();
-    
-    if (!apiKey) {
-      reject(new Error('请先在设置中配置 SiliconFlow API Key'));
-      return;
-    }
+// 调用解释 API (Streaming 版本)
+function callExplainAPIStreaming(text, onChunk, onDone, onError) {
+  const apiKey = getApiKey();
+  const model = getModel();
+  
+  if (!apiKey) {
+    onError(new Error('请先在设置中配置 SiliconFlow API Key'));
+    return;
+  }
 
-    const requestBody = JSON.stringify({
-      model: model,
-      messages: [
-        {
-          role: 'system',
-          content: `你是一个专业的知识解释助手。用户会给你一段文字（可能是一个词语、短语、句子或段落），请帮助解释其含义。
+  const requestBody = JSON.stringify({
+    model: model,
+    stream: true,  // 启用流式输出
+    messages: [
+      {
+        role: 'system',
+        content: `你是一个专业的知识解释助手。用户会给你一段文字（可能是一个词语、短语、句子或段落），请帮助解释其含义。
 
 请按照以下格式返回：
 1. 首先给出简洁的解释（1-3句话）
@@ -2150,72 +2346,90 @@ function callExplainAPI(text) {
 4. 如果是代码或技术相关内容，解释其功能和用途
 
 请用清晰易懂的语言解释，让用户能快速理解。如果原文是中文，用中文解释；如果原文是英文或其他语言，也用中文解释。`
-        },
-        {
-          role: 'user',
-          content: text
-        }
-      ],
-      temperature: 0.5,
-      max_tokens: 2048
-    });
-
-    const url = new URL(SILICONFLOW_API_URL);
-    
-    const options = {
-      hostname: url.hostname,
-      port: 443,
-      path: url.pathname,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Length': Buffer.byteLength(requestBody)
+      },
+      {
+        role: 'user',
+        content: text
       }
-    };
-
-    const req = https.request(options, (res) => {
-      let data = '';
-      
-      res.on('data', (chunk) => {
-        data += chunk;
-      });
-      
-      res.on('end', () => {
-        try {
-          const response = JSON.parse(data);
-          if (response.error) {
-            reject(new Error(response.error.message || 'API 返回错误'));
-            return;
-          }
-          if (response.choices && response.choices[0] && response.choices[0].message) {
-            resolve(response.choices[0].message.content.trim());
-          } else {
-            reject(new Error('API 返回格式不正确'));
-          }
-        } catch (e) {
-          reject(new Error('解析 API 响应失败: ' + e.message));
-        }
-      });
-    });
-
-    req.on('error', (e) => {
-      reject(new Error('API 请求失败: ' + e.message));
-    });
-
-    req.setTimeout(30000, () => {
-      req.destroy();
-      reject(new Error('API 请求超时'));
-    });
-
-    req.write(requestBody);
-    req.end();
+    ],
+    temperature: 0.5,
+    max_tokens: 2048
   });
+
+  const url = new URL(SILICONFLOW_API_URL);
+  
+  const options = {
+    hostname: url.hostname,
+    port: 443,
+    path: url.pathname,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Length': Buffer.byteLength(requestBody)
+    }
+  };
+
+  let fullContent = '';
+  let buffer = '';
+
+  const req = https.request(options, (res) => {
+    res.on('data', (chunk) => {
+      buffer += chunk.toString();
+      
+      // 处理 SSE 格式的数据
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || ''; // 保留不完整的行
+      
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          if (data === '[DONE]') {
+            continue;
+          }
+          try {
+            const json = JSON.parse(data);
+            if (json.choices && json.choices[0] && json.choices[0].delta) {
+              const content = json.choices[0].delta.content || '';
+              if (content) {
+                fullContent += content;
+                onChunk(content, fullContent);
+              }
+            }
+            // 检查是否有 usage 信息（通常在最后一条消息中）
+            if (json.usage) {
+              updateTokenStats(json.usage);
+            }
+          } catch (e) {
+            // 忽略解析错误
+          }
+        }
+      }
+    });
+    
+    res.on('end', () => {
+      onDone(fullContent);
+    });
+  });
+
+  req.on('error', (e) => {
+    onError(new Error('API 请求失败: ' + e.message));
+  });
+
+  req.setTimeout(30000, () => {
+    req.destroy();
+    onError(new Error('API 请求超时'));
+  });
+
+  req.write(requestBody);
+  req.end();
+  
+  return req;
 }
 
 // 注册解释快捷键
 function registerExplainShortcut() {
-  const shortcut = 'CommandOrControl+Shift+E';
+  const shortcut = 'Alt+Shift+E';
   
   console.log('Attempting to register explain shortcut:', shortcut);
   
@@ -2243,10 +2457,21 @@ function registerExplainShortcut() {
 }
 
 // 创建解释结果窗口
-async function showExplainDialog(originalText, explanation) {
+async function showExplainDialog(originalText) {
   // 关闭之前的窗口
   if (explainWindow && !explainWindow.isDestroyed()) {
     explainWindow.destroy();
+  }
+  
+  // 加载本地 marked.js
+  const markedMinPath = path.join(__dirname, 'node_modules', 'marked', 'marked.min.js');
+  const markedPath = path.join(__dirname, 'node_modules', 'marked', 'lib', 'marked.umd.js');
+  let markedScript = '';
+  
+  if (fs.existsSync(markedMinPath)) {
+    markedScript = fs.readFileSync(markedMinPath, 'utf-8');
+  } else if (fs.existsSync(markedPath)) {
+    markedScript = fs.readFileSync(markedPath, 'utf-8');
   }
   
   explainWindow = new BrowserWindow({
@@ -2264,13 +2489,14 @@ async function showExplainDialog(originalText, explanation) {
     }
   });
   
-  // 构建 HTML
+  // 构建 HTML - 支持流式显示 + Markdown 渲染
   const htmlContent = `
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
   <title>解释</title>
+  <script>${markedScript}<\/script>
   <style>
     * {
       box-sizing: border-box;
@@ -2312,6 +2538,25 @@ async function showExplainDialog(originalText, explanation) {
       color: #86868b;
       margin-bottom: 8px;
     }
+    .status-label {
+      display: inline-block;
+      font-size: 12px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      margin-left: 8px;
+    }
+    .status-loading {
+      background: #e3f2fd;
+      color: #1976d2;
+    }
+    .status-done {
+      background: #e8f5e9;
+      color: #388e3c;
+    }
+    .status-error {
+      background: #ffebee;
+      color: #d32f2f;
+    }
     .text-box {
       padding: 12px;
       background: white;
@@ -2320,8 +2565,6 @@ async function showExplainDialog(originalText, explanation) {
       font-size: 14px;
       line-height: 1.6;
       overflow-y: auto;
-      white-space: pre-wrap;
-      word-wrap: break-word;
     }
     .text-box.original {
       color: #1d1d1f;
@@ -2329,12 +2572,89 @@ async function showExplainDialog(originalText, explanation) {
       border-color: #ffc107;
       flex: 1;
       font-weight: 500;
+      white-space: pre-wrap;
+      word-wrap: break-word;
     }
     .text-box.explanation {
       color: #1d1d1f;
       background: #fff;
       border-color: #9c27b0;
       flex: 1;
+    }
+    /* Markdown 渲染样式 */
+    .text-box.explanation p {
+      margin-bottom: 10px;
+    }
+    .text-box.explanation p:last-child {
+      margin-bottom: 0;
+    }
+    .text-box.explanation ul, .text-box.explanation ol {
+      margin: 10px 0;
+      padding-left: 20px;
+    }
+    .text-box.explanation li {
+      margin-bottom: 5px;
+    }
+    .text-box.explanation code {
+      background: #f0f0f0;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+      font-size: 13px;
+      color: #d63384;
+    }
+    .text-box.explanation pre {
+      background: #2d2d2d;
+      color: #f8f8f2;
+      padding: 12px;
+      border-radius: 6px;
+      overflow-x: auto;
+      margin: 10px 0;
+    }
+    .text-box.explanation pre code {
+      background: none;
+      padding: 0;
+      color: inherit;
+    }
+    .text-box.explanation strong {
+      font-weight: 600;
+      color: #1d1d1f;
+    }
+    .text-box.explanation em {
+      font-style: italic;
+    }
+    .text-box.explanation h1, .text-box.explanation h2, .text-box.explanation h3 {
+      margin: 15px 0 10px 0;
+      font-weight: 600;
+    }
+    .text-box.explanation h1 { font-size: 18px; }
+    .text-box.explanation h2 { font-size: 16px; }
+    .text-box.explanation h3 { font-size: 15px; }
+    .text-box.explanation blockquote {
+      border-left: 3px solid #9c27b0;
+      padding-left: 12px;
+      margin: 10px 0;
+      color: #666;
+    }
+    .text-box.explanation a {
+      color: #9c27b0;
+      text-decoration: none;
+    }
+    .text-box.explanation a:hover {
+      text-decoration: underline;
+    }
+    .cursor {
+      display: inline-block;
+      width: 2px;
+      height: 1em;
+      background: #9c27b0;
+      animation: blink 0.7s infinite;
+      vertical-align: text-bottom;
+      margin-left: 2px;
+    }
+    @keyframes blink {
+      0%, 50% { opacity: 1; }
+      51%, 100% { opacity: 0; }
     }
     .buttons {
       display: flex;
@@ -2350,12 +2670,16 @@ async function showExplainDialog(originalText, explanation) {
       cursor: pointer;
       transition: all 0.2s;
     }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
     .btn-cancel {
       background: #e8e8ed;
       border: none;
       color: #1d1d1f;
     }
-    .btn-cancel:hover {
+    .btn-cancel:hover:not(:disabled) {
       background: #d2d2d7;
     }
     .btn-copy {
@@ -2363,7 +2687,7 @@ async function showExplainDialog(originalText, explanation) {
       border: none;
       color: white;
     }
-    .btn-copy:hover {
+    .btn-copy:hover:not(:disabled) {
       background: #7b1fa2;
     }
   </style>
@@ -2377,28 +2701,73 @@ async function showExplainDialog(originalText, explanation) {
   </div>
   
   <div class="section explanation">
-    <div class="label">解释：</div>
-    <div class="text-box explanation" id="explanation"></div>
+    <div class="label">解释：<span id="status" class="status-label status-loading">生成中...</span></div>
+    <div class="text-box explanation" id="explanation"><span class="cursor"></span></div>
   </div>
   
   <div class="buttons">
     <button class="btn-cancel" onclick="cancel()">关闭</button>
-    <button class="btn-copy" onclick="copyExplanation()">复制解释</button>
+    <button class="btn-copy" id="copyBtn" onclick="copyExplanation()" disabled>复制解释</button>
   </div>
   
   <script>
     const originalText = decodeURIComponent(atob('${Buffer.from(encodeURIComponent(originalText)).toString('base64')}'));
-    const explanation = decodeURIComponent(atob('${Buffer.from(encodeURIComponent(explanation)).toString('base64')}'));
+    let currentExplanation = '';
+    let isComplete = false;
     
     document.getElementById('original').textContent = originalText;
-    document.getElementById('explanation').textContent = explanation;
+    
+    // 配置 marked
+    if (typeof marked !== 'undefined') {
+      marked.setOptions({
+        breaks: true,
+        gfm: true
+      });
+    }
+    
+    // 渲染 Markdown
+    function renderMarkdown(text) {
+      if (typeof marked !== 'undefined') {
+        return marked.parse(text);
+      }
+      return text.replace(/\\n/g, '<br>');
+    }
+    
+    // 监听流式更新
+    window.electronExplain.onStreamChunk((chunk, fullContent) => {
+      currentExplanation = fullContent;
+      // 流式输出时使用简单的换行处理，避免不完整的 Markdown 导致渲染问题
+      const simpleHtml = fullContent.replace(/\\n/g, '<br>');
+      document.getElementById('explanation').innerHTML = simpleHtml + '<span class="cursor"></span>';
+      // 自动滚动到底部
+      const box = document.getElementById('explanation');
+      box.scrollTop = box.scrollHeight;
+    });
+    
+    window.electronExplain.onStreamDone((fullContent) => {
+      currentExplanation = fullContent;
+      isComplete = true;
+      // 完成时进行完整的 Markdown 渲染
+      document.getElementById('explanation').innerHTML = renderMarkdown(fullContent);
+      document.getElementById('status').textContent = '完成';
+      document.getElementById('status').className = 'status-label status-done';
+      document.getElementById('copyBtn').disabled = false;
+    });
+    
+    window.electronExplain.onStreamError((error) => {
+      document.getElementById('explanation').innerHTML = '<p style="color: #d32f2f;">❌ ' + error + '</p>';
+      document.getElementById('status').textContent = '失败';
+      document.getElementById('status').className = 'status-label status-error';
+    });
     
     function cancel() {
       window.electronExplain.cancel();
     }
     
     function copyExplanation() {
-      window.electronExplain.copy(explanation);
+      if (currentExplanation) {
+        window.electronExplain.copy(currentExplanation);
+      }
     }
   </script>
 </body>
@@ -2417,7 +2786,7 @@ async function showExplainDialog(originalText, explanation) {
   });
 }
 
-// 解释主函数
+// 解释主函数 (Streaming 版本)
 async function explainText() {
   console.log('=== explainText START ===');
   
@@ -2475,20 +2844,40 @@ async function explainText() {
     
     console.log('Selected text:', selectedText.substring(0, 100) + '...');
 
-    // 显示处理中通知
-    new Notification({
-      title: '🔄 正在解释...',
-      body: '正在调用 AI 解释含义，请稍候',
-      silent: true
-    }).show();
+    // 先显示对话框（流式）
+    await showExplainDialog(selectedText);
     
-    // 调用 API
-    const explanation = await callExplainAPI(selectedText);
+    // 等待窗口加载完成
+    await new Promise(resolve => setTimeout(resolve, 200));
     
-    console.log('Explanation:', explanation.substring(0, 100) + '...');
-    
-    // 显示结果对话框
-    await showExplainDialog(selectedText, explanation);
+    // 调用 Streaming API
+    callExplainAPIStreaming(
+      selectedText,
+      // onChunk - 收到新内容
+      (chunk, fullContent) => {
+        if (explainWindow && !explainWindow.isDestroyed()) {
+          explainWindow.webContents.send('explain-stream-chunk', chunk, fullContent);
+        }
+      },
+      // onDone - 完成
+      (fullContent) => {
+        console.log('Explanation complete:', fullContent.substring(0, 100) + '...');
+        if (explainWindow && !explainWindow.isDestroyed()) {
+          explainWindow.webContents.send('explain-stream-done', fullContent);
+        }
+        isExplainProcessing = false;
+        console.log('=== explainText END ===');
+      },
+      // onError - 错误
+      (error) => {
+        console.error('Explanation error:', error);
+        if (explainWindow && !explainWindow.isDestroyed()) {
+          explainWindow.webContents.send('explain-stream-error', error.message);
+        }
+        isExplainProcessing = false;
+        console.log('=== explainText END ===');
+      }
+    );
     
   } catch (error) {
     console.error('Explanation error:', error);
@@ -2500,7 +2889,6 @@ async function explainText() {
         silent: false
       }).show();
     }
-  } finally {
     isExplainProcessing = false;
     console.log('=== explainText END ===');
   }
