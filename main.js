@@ -290,6 +290,21 @@ function createTray() {
         }
       }
     },
+    {
+      label: 'Reset Processing State',
+      click: () => {
+        isProcessing = false;
+        isGrammarProcessing = false;
+        isTranslateProcessing = false;
+        isExplainProcessing = false;
+        console.log('All processing states reset to false');
+        new Notification({
+          title: '✅ 状态已重置',
+          body: '所有处理状态已重置',
+          silent: true
+        }).show();
+      }
+    },
     { type: 'separator' },
     {
       label: 'Quit',
@@ -1980,7 +1995,9 @@ function callTranslateAPI(text) {
       }
     };
 
+    console.log('Translate API: Starting request...');
     const req = https.request(options, (res) => {
+      console.log('Translate API: Response status:', res.statusCode);
       let data = '';
       
       res.on('data', (chunk) => {
@@ -1988,9 +2005,11 @@ function callTranslateAPI(text) {
       });
       
       res.on('end', () => {
+        console.log('Translate API: Response received, length:', data.length);
         try {
           const response = JSON.parse(data);
           if (response.error) {
+            console.log('Translate API: Error response:', response.error);
             reject(new Error(response.error.message || 'API 返回错误'));
             return;
           }
@@ -1999,21 +2018,26 @@ function callTranslateAPI(text) {
             if (response.usage) {
               updateTokenStats(response.usage);
             }
+            console.log('Translate API: Success');
             resolve(response.choices[0].message.content.trim());
           } else {
+            console.log('Translate API: Invalid format, response:', JSON.stringify(response).substring(0, 200));
             reject(new Error('API 返回格式不正确'));
           }
         } catch (e) {
+          console.log('Translate API: Parse error:', e.message, 'Data:', data.substring(0, 200));
           reject(new Error('解析 API 响应失败: ' + e.message));
         }
       });
     });
 
     req.on('error', (e) => {
+      console.log('Translate API: Request error:', e.message);
       reject(new Error('API 请求失败: ' + e.message));
     });
 
     req.setTimeout(30000, () => {
+      console.log('Translate API: Timeout');
       req.destroy();
       reject(new Error('API 请求超时'));
     });
@@ -2374,17 +2398,26 @@ function callExplainAPIStreaming(text, onChunk, onDone, onError) {
   let buffer = '';
 
   const req = https.request(options, (res) => {
+    console.log('Streaming response status:', res.statusCode);
+    console.log('Streaming response headers:', JSON.stringify(res.headers));
+    
     res.on('data', (chunk) => {
-      buffer += chunk.toString();
+      const chunkStr = chunk.toString();
+      console.log('Raw chunk received, length:', chunkStr.length, 'preview:', chunkStr.substring(0, 200));
+      buffer += chunkStr;
       
       // 处理 SSE 格式的数据
       const lines = buffer.split('\n');
       buffer = lines.pop() || ''; // 保留不完整的行
       
       for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6);
+        const trimmedLine = line.trim();
+        if (!trimmedLine) continue; // 跳过空行
+        
+        if (trimmedLine.startsWith('data:')) {
+          const data = trimmedLine.slice(5).trim(); // 移除 'data:' 前缀
           if (data === '[DONE]') {
+            console.log('Stream done signal received');
             continue;
           }
           try {
@@ -2393,6 +2426,7 @@ function callExplainAPIStreaming(text, onChunk, onDone, onError) {
               const content = json.choices[0].delta.content || '';
               if (content) {
                 fullContent += content;
+                console.log('Stream chunk received, total length:', fullContent.length);
                 onChunk(content, fullContent);
               }
             }
@@ -2401,13 +2435,54 @@ function callExplainAPIStreaming(text, onChunk, onDone, onError) {
               updateTokenStats(json.usage);
             }
           } catch (e) {
-            // 忽略解析错误
+            console.log('Parse error for line:', trimmedLine.substring(0, 100));
           }
         }
       }
     });
     
     res.on('end', () => {
+      console.log('Stream ended, total content length:', fullContent.length);
+      console.log('Remaining buffer:', buffer.substring(0, 200));
+      
+      // 如果没有收到任何流式内容，尝试解析为普通 JSON 响应
+      if (fullContent.length === 0 && buffer.trim()) {
+        console.log('No streaming content, trying to parse as regular JSON...');
+        try {
+          const json = JSON.parse(buffer);
+          if (json.choices && json.choices[0] && json.choices[0].message) {
+            fullContent = json.choices[0].message.content || '';
+            console.log('Parsed as regular JSON, content length:', fullContent.length);
+            if (json.usage) {
+              updateTokenStats(json.usage);
+            }
+          } else if (json.error) {
+            onError(new Error(json.error.message || 'API 返回错误'));
+            return;
+          }
+        } catch (e) {
+          console.log('Failed to parse as JSON:', e.message);
+        }
+      }
+      
+      // 处理可能残留在 buffer 中的 SSE 数据
+      if (buffer.trim()) {
+        const trimmedLine = buffer.trim();
+        if (trimmedLine.startsWith('data:')) {
+          const data = trimmedLine.slice(5).trim();
+          if (data && data !== '[DONE]') {
+            try {
+              const json = JSON.parse(data);
+              if (json.choices && json.choices[0] && json.choices[0].delta) {
+                const content = json.choices[0].delta.content || '';
+                if (content) {
+                  fullContent += content;
+                }
+              }
+            } catch (e) {}
+          }
+        }
+      }
       onDone(fullContent);
     });
   });
@@ -2847,8 +2922,9 @@ async function explainText() {
     // 先显示对话框（流式）
     await showExplainDialog(selectedText);
     
-    // 等待窗口加载完成
-    await new Promise(resolve => setTimeout(resolve, 200));
+    // 等待窗口加载完成并确保 preload 脚本执行完毕
+    await new Promise(resolve => setTimeout(resolve, 300));
+    console.log('Starting streaming API call...');
     
     // 调用 Streaming API
     callExplainAPIStreaming(

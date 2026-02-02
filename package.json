@@ -53,6 +53,7 @@
       "preload-grammar.js",
       "preload-settings.js",
       "preload-translate.js",
+      "preload-explain.js",
       "renderer-template.html",
       "icon.png",
       "build_icon.png",
