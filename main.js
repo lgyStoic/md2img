@@ -14,6 +14,8 @@ let isProcessing = false;
 let isGrammarProcessing = false;
 let isTranslateProcessing = false;
 let translateWindow = null;
+let isExplainProcessing = false;
+let explainWindow = null;
 
 // SiliconFlow API 配置
 const SILICONFLOW_API_URL = 'https://api.siliconflow.cn/v1/chat/completions';
@@ -111,6 +113,7 @@ app.whenReady().then(() => {
   registerGlobalShortcut();
   registerGrammarShortcut();
   registerTranslateShortcut();
+  registerExplainShortcut();
   setupIpcHandlers();
   // Auto-detection disabled - use shortcut instead
   // startClipboardWatcher();
@@ -174,6 +177,7 @@ function createTray() {
   const shortcutKey = process.platform === 'darwin' ? 'Cmd+Shift+M' : 'Ctrl+Shift+M';
   const grammarShortcutKey = process.platform === 'darwin' ? 'Cmd+Shift+G' : 'Ctrl+Shift+G';
   const translateShortcutKey = process.platform === 'darwin' ? 'Cmd+Shift+T' : 'Ctrl+Shift+T';
+  const explainShortcutKey = process.platform === 'darwin' ? 'Cmd+Shift+E' : 'Ctrl+Shift+E';
   
   const contextMenu = Menu.buildFromTemplate([
     {
@@ -195,6 +199,13 @@ function createTray() {
       accelerator: translateShortcutKey,
       click: () => {
         translateText();
+      }
+    },
+    {
+      label: 'Explain (AI)',
+      accelerator: explainShortcutKey,
+      click: () => {
+        explainText();
       }
     },
     { type: 'separator' },
@@ -238,7 +249,7 @@ function createTray() {
     }
   ]);
   
-  tray.setToolTip(`Markdown to Image Service\n${shortcutKey}: Convert to Image\n${grammarShortcutKey}: Grammar Correction\n${translateShortcutKey}: Translate`);
+  tray.setToolTip(`Markdown to Image Service\n${shortcutKey}: Convert to Image\n${grammarShortcutKey}: Grammar Correction\n${translateShortcutKey}: Translate\n${explainShortcutKey}: Explain`);
   tray.setContextMenu(contextMenu);
 }
 
@@ -1148,6 +1159,29 @@ function setupIpcHandlers() {
       }
     }
   });
+  
+  // 解释相关 IPC
+  ipcMain.on('explain-cancel', () => {
+    if (explainWindow && !explainWindow.isDestroyed()) {
+      explainWindow.close();
+    }
+  });
+  
+  ipcMain.on('explain-copy', (event, text) => {
+    clipboard.writeText(text);
+    
+    if (Notification.isSupported()) {
+      new Notification({
+        title: '✅ 已复制',
+        body: '解释内容已复制到剪贴板',
+        silent: true
+      }).show();
+    }
+    
+    if (explainWindow && !explainWindow.isDestroyed()) {
+      explainWindow.close();
+    }
+  });
 }
 
 // 显示设置窗口
@@ -1160,8 +1194,8 @@ function showSettingsWindow() {
   }
   
   settingsWindow = new BrowserWindow({
-    width: 500,
-    height: 400,
+    width: 520,
+    height: 450,
     show: false,
     resizable: false,
     minimizable: false,
@@ -1297,11 +1331,42 @@ function showSettingsWindow() {
   <div class="form-group">
     <label>模型</label>
     <select id="model">
-      <option value="Qwen/Qwen2.5-7B-Instruct" ${config.model === 'Qwen/Qwen2.5-7B-Instruct' ? 'selected' : ''}>Qwen2.5-7B-Instruct (推荐)</option>
-      <option value="Qwen/Qwen2.5-14B-Instruct" ${config.model === 'Qwen/Qwen2.5-14B-Instruct' ? 'selected' : ''}>Qwen2.5-14B-Instruct</option>
-      <option value="Qwen/Qwen2.5-32B-Instruct" ${config.model === 'Qwen/Qwen2.5-32B-Instruct' ? 'selected' : ''}>Qwen2.5-32B-Instruct</option>
-      <option value="deepseek-ai/DeepSeek-V2.5" ${config.model === 'deepseek-ai/DeepSeek-V2.5' ? 'selected' : ''}>DeepSeek-V2.5</option>
-      <option value="THUDM/glm-4-9b-chat" ${config.model === 'THUDM/glm-4-9b-chat' ? 'selected' : ''}>GLM-4-9B-Chat</option>
+      <optgroup label="🆓 免费模型">
+        <option value="Qwen/Qwen2.5-7B-Instruct" ${config.model === 'Qwen/Qwen2.5-7B-Instruct' ? 'selected' : ''}>Qwen2.5-7B-Instruct (推荐)</option>
+        <option value="Qwen/Qwen3-8B" ${config.model === 'Qwen/Qwen3-8B' ? 'selected' : ''}>Qwen3-8B</option>
+        <option value="Qwen/Qwen2.5-Coder-7B-Instruct" ${config.model === 'Qwen/Qwen2.5-Coder-7B-Instruct' ? 'selected' : ''}>Qwen2.5-Coder-7B (代码)</option>
+        <option value="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B" ${config.model === 'deepseek-ai/DeepSeek-R1-Distill-Qwen-7B' ? 'selected' : ''}>DeepSeek-R1-Distill-7B</option>
+        <option value="THUDM/glm-4-9b-chat" ${config.model === 'THUDM/glm-4-9b-chat' ? 'selected' : ''}>GLM-4-9B-Chat</option>
+        <option value="THUDM/GLM-Z1-9B-0414" ${config.model === 'THUDM/GLM-Z1-9B-0414' ? 'selected' : ''}>GLM-Z1-9B (推理)</option>
+        <option value="THUDM/GLM-4.1V-9B-Thinking" ${config.model === 'THUDM/GLM-4.1V-9B-Thinking' ? 'selected' : ''}>GLM-4.1V-9B-Thinking</option>
+        <option value="internlm/internlm2_5-7b-chat" ${config.model === 'internlm/internlm2_5-7b-chat' ? 'selected' : ''}>InternLM2.5-7B-Chat</option>
+      </optgroup>
+      <optgroup label="💰 经济实惠 (¥0.7-2)">
+        <option value="Qwen/Qwen2.5-14B-Instruct" ${config.model === 'Qwen/Qwen2.5-14B-Instruct' ? 'selected' : ''}>Qwen2.5-14B-Instruct</option>
+        <option value="deepseek-ai/DeepSeek-R1-Distill-Qwen-14B" ${config.model === 'deepseek-ai/DeepSeek-R1-Distill-Qwen-14B' ? 'selected' : ''}>DeepSeek-R1-Distill-14B</option>
+        <option value="Qwen/Qwen2.5-32B-Instruct" ${config.model === 'Qwen/Qwen2.5-32B-Instruct' ? 'selected' : ''}>Qwen2.5-32B-Instruct</option>
+        <option value="Qwen/Qwen2.5-Coder-32B-Instruct" ${config.model === 'Qwen/Qwen2.5-Coder-32B-Instruct' ? 'selected' : ''}>Qwen2.5-Coder-32B (代码)</option>
+        <option value="deepseek-ai/DeepSeek-R1-Distill-Qwen-32B" ${config.model === 'deepseek-ai/DeepSeek-R1-Distill-Qwen-32B' ? 'selected' : ''}>DeepSeek-R1-Distill-32B</option>
+        <option value="deepseek-ai/DeepSeek-V2.5" ${config.model === 'deepseek-ai/DeepSeek-V2.5' ? 'selected' : ''}>DeepSeek-V2.5</option>
+      </optgroup>
+      <optgroup label="💎 高性能 (¥2-8)">
+        <option value="deepseek-ai/DeepSeek-V3.2" ${config.model === 'deepseek-ai/DeepSeek-V3.2' ? 'selected' : ''}>DeepSeek-V3.2 ⭐ 性价比之王</option>
+        <option value="Qwen/QwQ-32B" ${config.model === 'Qwen/QwQ-32B' ? 'selected' : ''}>QwQ-32B (推理)</option>
+        <option value="Qwen/Qwen3-32B" ${config.model === 'Qwen/Qwen3-32B' ? 'selected' : ''}>Qwen3-32B</option>
+        <option value="THUDM/GLM-Z1-32B-0414" ${config.model === 'THUDM/GLM-Z1-32B-0414' ? 'selected' : ''}>GLM-Z1-32B (推理)</option>
+        <option value="Qwen/Qwen2.5-72B-Instruct" ${config.model === 'Qwen/Qwen2.5-72B-Instruct' ? 'selected' : ''}>Qwen2.5-72B-Instruct</option>
+        <option value="deepseek-ai/DeepSeek-V3" ${config.model === 'deepseek-ai/DeepSeek-V3' ? 'selected' : ''}>DeepSeek-V3</option>
+        <option value="MiniMaxAI/MiniMax-M2" ${config.model === 'MiniMaxAI/MiniMax-M2' ? 'selected' : ''}>MiniMax-M2</option>
+      </optgroup>
+      <optgroup label="🚀 旗舰模型 (¥8+)">
+        <option value="deepseek-ai/DeepSeek-R1" ${config.model === 'deepseek-ai/DeepSeek-R1' ? 'selected' : ''}>DeepSeek-R1 ⭐ 顶级推理</option>
+        <option value="moonshotai/Kimi-K2-Thinking" ${config.model === 'moonshotai/Kimi-K2-Thinking' ? 'selected' : ''}>Kimi-K2-Thinking</option>
+        <option value="zai-org/GLM-4.6" ${config.model === 'zai-org/GLM-4.6' ? 'selected' : ''}>GLM-4.6</option>
+        <option value="Qwen/Qwen3-235B-A22B-Instruct-2507" ${config.model === 'Qwen/Qwen3-235B-A22B-Instruct-2507' ? 'selected' : ''}>Qwen3-235B-Instruct</option>
+        <option value="Qwen/Qwen3-235B-A22B-Thinking-2507" ${config.model === 'Qwen/Qwen3-235B-A22B-Thinking-2507' ? 'selected' : ''}>Qwen3-235B-Thinking</option>
+        <option value="baidu/ERNIE-4.5-300B-A47B" ${config.model === 'baidu/ERNIE-4.5-300B-A47B' ? 'selected' : ''}>文心一言 ERNIE-4.5</option>
+        <option value="stepfun-ai/step3" ${config.model === 'stepfun-ai/step3' ? 'selected' : ''}>Step-3</option>
+      </optgroup>
     </select>
   </div>
   
@@ -2055,6 +2120,389 @@ async function translateText() {
   } finally {
     isTranslateProcessing = false;
     console.log('=== translateText END ===');
+  }
+}
+
+// ==================== 解释功能 ====================
+
+// 调用解释 API
+function callExplainAPI(text) {
+  return new Promise((resolve, reject) => {
+    const apiKey = getApiKey();
+    const model = getModel();
+    
+    if (!apiKey) {
+      reject(new Error('请先在设置中配置 SiliconFlow API Key'));
+      return;
+    }
+
+    const requestBody = JSON.stringify({
+      model: model,
+      messages: [
+        {
+          role: 'system',
+          content: `你是一个专业的知识解释助手。用户会给你一段文字（可能是一个词语、短语、句子或段落），请帮助解释其含义。
+
+请按照以下格式返回：
+1. 首先给出简洁的解释（1-3句话）
+2. 如果有必要，可以补充背景知识或使用场景
+3. 如果是专业术语，解释其领域和常见用法
+4. 如果是代码或技术相关内容，解释其功能和用途
+
+请用清晰易懂的语言解释，让用户能快速理解。如果原文是中文，用中文解释；如果原文是英文或其他语言，也用中文解释。`
+        },
+        {
+          role: 'user',
+          content: text
+        }
+      ],
+      temperature: 0.5,
+      max_tokens: 2048
+    });
+
+    const url = new URL(SILICONFLOW_API_URL);
+    
+    const options = {
+      hostname: url.hostname,
+      port: 443,
+      path: url.pathname,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Length': Buffer.byteLength(requestBody)
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
+      
+      res.on('end', () => {
+        try {
+          const response = JSON.parse(data);
+          if (response.error) {
+            reject(new Error(response.error.message || 'API 返回错误'));
+            return;
+          }
+          if (response.choices && response.choices[0] && response.choices[0].message) {
+            resolve(response.choices[0].message.content.trim());
+          } else {
+            reject(new Error('API 返回格式不正确'));
+          }
+        } catch (e) {
+          reject(new Error('解析 API 响应失败: ' + e.message));
+        }
+      });
+    });
+
+    req.on('error', (e) => {
+      reject(new Error('API 请求失败: ' + e.message));
+    });
+
+    req.setTimeout(30000, () => {
+      req.destroy();
+      reject(new Error('API 请求超时'));
+    });
+
+    req.write(requestBody);
+    req.end();
+  });
+}
+
+// 注册解释快捷键
+function registerExplainShortcut() {
+  const shortcut = 'CommandOrControl+Shift+E';
+  
+  console.log('Attempting to register explain shortcut:', shortcut);
+  
+  const ret = globalShortcut.register(shortcut, () => {
+    console.log('=== EXPLAIN SHORTCUT TRIGGERED ===');
+    explainText().then(() => {
+      console.log('explainText completed');
+    }).catch(err => {
+      console.error('explainText error:', err);
+    });
+  });
+
+  if (!ret) {
+    console.error('❌ Failed to register explain shortcut:', shortcut);
+    if (Notification.isSupported()) {
+      new Notification({
+        title: 'Shortcut Registration Failed',
+        body: `Could not register ${shortcut}. It may be in use by another app.`,
+        silent: false
+      }).show();
+    }
+  } else {
+    console.log('✅ Explain shortcut registered:', shortcut);
+  }
+}
+
+// 创建解释结果窗口
+async function showExplainDialog(originalText, explanation) {
+  // 关闭之前的窗口
+  if (explainWindow && !explainWindow.isDestroyed()) {
+    explainWindow.destroy();
+  }
+  
+  explainWindow = new BrowserWindow({
+    width: 650,
+    height: 550,
+    show: false,
+    alwaysOnTop: true,
+    resizable: true,
+    minimizable: false,
+    maximizable: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-explain.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    }
+  });
+  
+  // 构建 HTML
+  const htmlContent = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>解释</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      padding: 20px;
+      background: #f5f5f7;
+      color: #1d1d1f;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    h2 {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 15px;
+      color: #1d1d1f;
+    }
+    .section {
+      display: flex;
+      flex-direction: column;
+      margin-bottom: 15px;
+      min-height: 0;
+    }
+    .section.original {
+      flex: 0 0 auto;
+      max-height: 120px;
+    }
+    .section.explanation {
+      flex: 1;
+      min-height: 200px;
+    }
+    .label {
+      font-size: 13px;
+      font-weight: 500;
+      color: #86868b;
+      margin-bottom: 8px;
+    }
+    .text-box {
+      padding: 12px;
+      background: white;
+      border: 1px solid #d2d2d7;
+      border-radius: 8px;
+      font-size: 14px;
+      line-height: 1.6;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    .text-box.original {
+      color: #1d1d1f;
+      background: #fff3cd;
+      border-color: #ffc107;
+      flex: 1;
+      font-weight: 500;
+    }
+    .text-box.explanation {
+      color: #1d1d1f;
+      background: #fff;
+      border-color: #9c27b0;
+      flex: 1;
+    }
+    .buttons {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      padding-top: 10px;
+    }
+    button {
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-cancel {
+      background: #e8e8ed;
+      border: none;
+      color: #1d1d1f;
+    }
+    .btn-cancel:hover {
+      background: #d2d2d7;
+    }
+    .btn-copy {
+      background: #9c27b0;
+      border: none;
+      color: white;
+    }
+    .btn-copy:hover {
+      background: #7b1fa2;
+    }
+  </style>
+</head>
+<body>
+  <h2>💡 词义解释</h2>
+  
+  <div class="section original">
+    <div class="label">选中内容：</div>
+    <div class="text-box original" id="original"></div>
+  </div>
+  
+  <div class="section explanation">
+    <div class="label">解释：</div>
+    <div class="text-box explanation" id="explanation"></div>
+  </div>
+  
+  <div class="buttons">
+    <button class="btn-cancel" onclick="cancel()">关闭</button>
+    <button class="btn-copy" onclick="copyExplanation()">复制解释</button>
+  </div>
+  
+  <script>
+    const originalText = decodeURIComponent(atob('${Buffer.from(encodeURIComponent(originalText)).toString('base64')}'));
+    const explanation = decodeURIComponent(atob('${Buffer.from(encodeURIComponent(explanation)).toString('base64')}'));
+    
+    document.getElementById('original').textContent = originalText;
+    document.getElementById('explanation').textContent = explanation;
+    
+    function cancel() {
+      window.electronExplain.cancel();
+    }
+    
+    function copyExplanation() {
+      window.electronExplain.copy(explanation);
+    }
+  </script>
+</body>
+</html>
+  `;
+  
+  const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`;
+  
+  await explainWindow.loadURL(dataUrl);
+  explainWindow.show();
+  explainWindow.focus();
+  
+  // 窗口关闭时清理
+  explainWindow.on('closed', () => {
+    explainWindow = null;
+  });
+}
+
+// 解释主函数
+async function explainText() {
+  console.log('=== explainText START ===');
+  
+  if (isExplainProcessing) {
+    console.log('Already processing explanation, skipping...');
+    if (Notification.isSupported()) {
+      new Notification({
+        title: '处理中',
+        body: '请等待当前解释完成',
+        silent: true
+      }).show();
+    }
+    return;
+  }
+  
+  try {
+    isExplainProcessing = true;
+    
+    // 等待用户松开快捷键，避免焦点问题
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // 保存当前剪贴板内容
+    const originalClipboard = clipboard.readText();
+    console.log('Original clipboard:', originalClipboard ? originalClipboard.substring(0, 50) + '...' : '(empty)');
+    
+    // 清空剪贴板，以便检测复制是否成功
+    clipboard.writeText('');
+    
+    // 模拟 Cmd+C / Ctrl+C 复制选中的文本
+    console.log('Simulating copy command...');
+    await simulateKeyboard('copy');
+    
+    // 等待剪贴板更新（增加等待时间）
+    await new Promise(resolve => setTimeout(resolve, 300));
+    
+    // 读取剪贴板中选中的文本
+    const selectedText = clipboard.readText();
+    console.log('After copy, clipboard:', selectedText ? selectedText.substring(0, 50) + '...' : '(empty)');
+    
+    if (!selectedText || selectedText.trim().length === 0) {
+      console.log('No text selected, showing notification...');
+      // 恢复原来的剪贴板内容
+      if (originalClipboard) {
+        clipboard.writeText(originalClipboard);
+      }
+      
+      new Notification({
+        title: '没有选中文本',
+        body: '请先用鼠标拖选文字（使其高亮），再按快捷键',
+        silent: false
+      }).show();
+      console.log('Notification shown');
+      return;
+    }
+    
+    console.log('Selected text:', selectedText.substring(0, 100) + '...');
+
+    // 显示处理中通知
+    new Notification({
+      title: '🔄 正在解释...',
+      body: '正在调用 AI 解释含义，请稍候',
+      silent: true
+    }).show();
+    
+    // 调用 API
+    const explanation = await callExplainAPI(selectedText);
+    
+    console.log('Explanation:', explanation.substring(0, 100) + '...');
+    
+    // 显示结果对话框
+    await showExplainDialog(selectedText, explanation);
+    
+  } catch (error) {
+    console.error('Explanation error:', error);
+    
+    if (Notification.isSupported()) {
+      new Notification({
+        title: '❌ 解释失败',
+        body: error.message,
+        silent: false
+      }).show();
+    }
+  } finally {
+    isExplainProcessing = false;
+    console.log('=== explainText END ===');
   }
 }
 
